@@ -43,6 +43,11 @@ func (c *Client) RegisterCustomEventHandler(cmd string, handler func(s string)) 
 	(*c.customEventHandlers)[cmd] = handler
 }
 
+// RegisterFullEventHandlers 注册 所有事件 的处理器
+func (c *Client) RegisterFullEventHandler(handler func(s string)) {
+	c.fullEventHandler = handler
+}
+
 // OnDanmaku 添加 弹幕事件 的处理器
 func (c *Client) OnDanmaku(f func(*message.Danmaku)) {
 	c.eventHandlers.danmakuMessageHandlers = append(c.eventHandlers.danmakuMessageHandlers, f)
@@ -89,6 +94,12 @@ func (c *Client) Handle(p packet.Packet) {
 		if ind := strings.Index(cmd, ":"); ind >= 0 {
 			cmd = cmd[:ind]
 		}
+
+		// 执行 fullEventHandler，不覆盖库其他 handler
+		if fullEventHandler := c.fullEventHandler; fullEventHandler != nil {
+			go cover(func() { fullEventHandler(sb) })
+		}
+
 		// 优先执行自定义 eventHandler ，会覆盖库内自带的 handler
 		f, ok := (*c.customEventHandlers)[cmd]
 		if ok {

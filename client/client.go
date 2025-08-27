@@ -28,6 +28,7 @@ type Client struct {
 	retryCount          int
 	eventHandlers       *eventHandlers
 	customEventHandlers *customEventHandlers
+	fullEventHandler    func(s string)
 	cancel              context.CancelFunc
 	done                <-chan struct{}
 	lock                sync.RWMutex
@@ -41,6 +42,7 @@ func NewClient(roomID int) *Client {
 		retryCount:          0,
 		eventHandlers:       &eventHandlers{},
 		customEventHandlers: &customEventHandlers{},
+		fullEventHandler:    nil,
 		done:                ctx.Done(),
 		cancel:              cancel,
 		lock:                sync.RWMutex{},
