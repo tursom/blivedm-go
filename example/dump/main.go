@@ -3,10 +3,10 @@ package main
 import (
 	"fmt"
 
-	"github.com/Akegarasu/blivedm-go/client"
-	_ "github.com/Akegarasu/blivedm-go/utils"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tursom/blivedm-go/client"
+	_ "github.com/tursom/blivedm-go/utils"
 )
 
 const roomId = 8792912

@@ -1,9 +1,9 @@
 package message
 
 import (
-	"github.com/Akegarasu/blivedm-go/utils"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tursom/blivedm-go/utils"
 )
 
 // SuperChat 超级弹幕消息结构体

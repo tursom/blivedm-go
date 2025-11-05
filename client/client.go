@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Akegarasu/blivedm-go/api"
-	"github.com/Akegarasu/blivedm-go/packet"
 	"github.com/gorilla/websocket"
 	log "github.com/sirupsen/logrus"
+	"github.com/tursom/blivedm-go/api"
+	"github.com/tursom/blivedm-go/packet"
 )
 
 type Client struct {

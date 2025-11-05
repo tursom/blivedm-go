@@ -1,10 +1,10 @@
 package message
 
 import (
-	"github.com/Akegarasu/blivedm-go/pb"
-	"github.com/Akegarasu/blivedm-go/utils"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
+	"github.com/tursom/blivedm-go/pb"
+	"github.com/tursom/blivedm-go/utils"
 	"google.golang.org/protobuf/proto"
 )
 

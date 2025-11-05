@@ -1,4 +1,4 @@
-module github.com/Akegarasu/blivedm-go
+module github.com/tursom/blivedm-go
 
 go 1.20
 

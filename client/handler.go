@@ -5,10 +5,10 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"github.com/Akegarasu/blivedm-go/message"
-	"github.com/Akegarasu/blivedm-go/packet"
-	"github.com/Akegarasu/blivedm-go/utils"
 	log "github.com/sirupsen/logrus"
+	"github.com/tursom/blivedm-go/message"
+	"github.com/tursom/blivedm-go/packet"
+	"github.com/tursom/blivedm-go/utils"
 )
 
 var (
