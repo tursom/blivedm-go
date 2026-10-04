@@ -87,12 +87,13 @@ func (c *Client) SetHost(host string) {
 func (c *Client) UseDefaultHost() { c.SetHost("broadcastlv.chat.bilibili.com") }
 
 type connectionInfo struct {
-	roomID int
-	uid    int
-	buvid  string
-	cookie string
-	token  string
-	hosts  []string
+	roomID      int
+	uid         int
+	buvid       string
+	cookie      string
+	token       string
+	hosts       []string
+	customHosts bool
 }
 
 func (c *Client) init(ctx context.Context, info connectionInfo) (connectionInfo, error) {
@@ -118,12 +119,17 @@ func (c *Client) init(ctx context.Context, info connectionInfo) (connectionInfo,
 		return info, fmt.Errorf("get room info: code=%d message=%s", room.Code, room.Message)
 	}
 	info.roomID = room.Data.RoomId
-	if len(info.hosts) == 0 {
+	return c.refreshDanmuInfo(ctx, info)
+}
+
+func (c *Client) refreshDanmuInfo(ctx context.Context, info connectionInfo) (connectionInfo, error) {
+	if !info.customHosts {
 		danmu, err := api.GetDanmuInfoContext(ctx, info.roomID, info.cookie)
 		if err != nil {
 			return info, err
 		}
 		info.token = danmu.Data.Token
+		info.hosts = nil
 		for _, host := range danmu.Data.HostList {
 			port := host.WssPort
 			if port == 0 {
@@ -160,10 +166,14 @@ func (c *Client) StartContext(ctx context.Context) error {
 	r := &clientRun{ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	c.run, c.done = r, r.done
 	info := connectionInfo{roomID: c.RoomID, uid: c.Uid, buvid: c.Buvid, cookie: c.Cookie, hosts: append([]string(nil), c.hostList...)}
+	info.customHosts = len(info.hosts) != 0
 	c.mu.Unlock()
 	go func() { <-ctx.Done(); r.closeConn() }()
 	info, err = c.init(ctx, info)
 	if err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		c.finish(r)
 		return err
 	}
@@ -171,12 +181,16 @@ func (c *Client) StartContext(ctx context.Context) error {
 	c.RoomID, c.Uid, c.Buvid = info.roomID, info.uid, info.buvid
 	c.mu.Unlock()
 	attempt := 0
-	conn, err := c.connect(r, info, options, &attempt)
+	delay := options.ReconnectInterval
+	conn, err := c.connect(r, &info, options, &attempt, &delay, false)
 	if err != nil {
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
 		c.finish(r)
 		return err
 	}
-	go c.runLoop(r, conn, info, options, attempt)
+	go c.runLoop(r, conn, info, options, attempt, delay)
 	return nil
 }
 func (c *Client) finish(r *clientRun) {
