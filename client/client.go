@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/tursom/blivedm-go/api"
@@ -25,6 +26,7 @@ type Client struct {
 	options             Options
 	run                 *clientRun
 	done                <-chan struct{}
+	status              ConnectionStatus // protected by mu, together with run
 	handlerMu           sync.RWMutex
 	eventHandlers       eventHandlers
 	customEventHandlers customEventHandlers
@@ -70,7 +72,9 @@ func NewClientWithOptions(roomID int, options Options) (*Client, error) {
 	}
 	done := make(chan struct{})
 	close(done)
-	return &Client{RoomID: roomID, options: options, done: done, customEventHandlers: make(customEventHandlers)}, nil
+	c := &Client{RoomID: roomID, options: options, done: done, customEventHandlers: make(customEventHandlers)}
+	c.setStatusLocked("idle", "", "", time.Time{})
+	return c, nil
 }
 func (c *Client) SetCookie(cookie string) {
 	c.mu.Lock()
@@ -93,6 +97,7 @@ type connectionInfo struct {
 	cookie      string
 	token       string
 	hosts       []string
+	host        string // current/last attempted endpoint; owned by the run goroutine
 	customHosts bool
 }
 
@@ -150,6 +155,11 @@ func (c *Client) Start() error { return c.StartContext(context.Background()) }
 // StartContext 返回时已发送入房包；认证应答在后台处理。ctx 控制整个运行周期。
 func (c *Client) StartContext(ctx context.Context) error {
 	if ctx == nil {
+		c.mu.Lock()
+		if c.run == nil {
+			c.setStatusLocked("error", "nil context", "", time.Time{})
+		}
+		c.mu.Unlock()
 		return errors.New("nil context")
 	}
 	c.mu.Lock()
@@ -159,26 +169,38 @@ func (c *Client) StartContext(ctx context.Context) error {
 	}
 	options, err := c.options.withDefaults()
 	if err != nil {
+		c.setStatusLocked("error", "invalid client options", "", time.Time{})
 		c.mu.Unlock()
 		return err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	r := &clientRun{ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	c.run, c.done = r, r.done
+	c.setStatusLocked("connecting", "", "", time.Time{})
 	info := connectionInfo{roomID: c.RoomID, uid: c.Uid, buvid: c.Buvid, cookie: c.Cookie, hosts: append([]string(nil), c.hostList...)}
 	info.customHosts = len(info.hosts) != 0
 	c.mu.Unlock()
-	go func() { <-ctx.Done(); r.closeConn() }()
+	go func() {
+		<-ctx.Done()
+		c.mu.Lock()
+		if c.run == r {
+			c.setStatusLocked("stopped", "", c.status.Host, time.Time{})
+		}
+		c.mu.Unlock()
+		r.closeConn()
+	}()
 	info, err = c.init(ctx, info)
 	if err != nil {
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		c.finish(r)
+		c.finish(r, err)
 		return err
 	}
 	c.mu.Lock()
-	c.RoomID, c.Uid, c.Buvid = info.roomID, info.uid, info.buvid
+	if c.run == r && ctx.Err() == nil {
+		c.RoomID, c.Uid, c.Buvid = info.roomID, info.uid, info.buvid
+	}
 	c.mu.Unlock()
 	attempt := 0
 	delay := options.ReconnectInterval
@@ -187,19 +209,26 @@ func (c *Client) StartContext(ctx context.Context) error {
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		c.finish(r)
+		c.finish(r, err)
 		return err
 	}
 	go c.runLoop(r, conn, info, options, attempt, delay)
 	return nil
 }
-func (c *Client) finish(r *clientRun) {
-	r.cancel()
+func (c *Client) finish(r *clientRun, err error) {
 	r.closeConn()
 	c.mu.Lock()
 	if c.run == r {
+		if r.ctx.Err() != nil || err == nil {
+			c.setStatusLocked("stopped", "", c.status.Host, time.Time{})
+		} else {
+			c.setStatusLocked("error", safeConnectionError(err), c.status.Host, time.Time{})
+		}
 		c.run = nil
 	}
+	// Detach and publish the terminal state before cancellation can wake the
+	// watcher. A delayed watcher/Stop only ever closes this run's connection.
+	r.cancel()
 	close(r.done)
 	c.mu.Unlock()
 }
@@ -208,9 +237,12 @@ func (c *Client) finish(r *clientRun) {
 func (c *Client) Stop() {
 	c.mu.Lock()
 	r := c.run
-	c.mu.Unlock()
+	c.setStatusLocked("stopped", "", c.status.Host, time.Time{})
 	if r != nil {
 		r.cancel()
+	}
+	c.mu.Unlock()
+	if r != nil {
 		r.closeConn()
 	}
 }

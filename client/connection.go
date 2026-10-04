@@ -27,10 +27,10 @@ func endpoint(host string) (string, error) {
 	}
 	u, err := url.Parse(host)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("%w: %v", errInvalidEndpoint, err)
 	}
 	if (u.Scheme != "ws" && u.Scheme != "wss") || u.Hostname() == "" {
-		return "", fmt.Errorf("invalid WebSocket endpoint %q", host)
+		return "", fmt.Errorf("%w %q", errInvalidEndpoint, host)
 	}
 	if u.Path == "" {
 		u.Path = "/sub"
@@ -45,6 +45,7 @@ func (c *Client) connect(r *clientRun, info *connectionInfo, options Options, at
 		if err := r.ctx.Err(); err != nil {
 			return nil, err
 		}
+		c.setRunStatus(r, "connecting", nil, info.host, time.Time{})
 		var err error
 		if refresh {
 			*info, err = c.refreshDanmuInfo(r.ctx, *info)
@@ -57,6 +58,8 @@ func (c *Client) connect(r *clientRun, info *connectionInfo, options Options, at
 			if endpointErr != nil {
 				return nil, endpointErr
 			}
+			info.host = host
+			c.setRunStatus(r, "connecting", nil, host, time.Time{})
 			(*attempt)++
 			var conn *websocket.Conn
 			conn, err = dialWebSocket(r.ctx, &dialer, host, headers)
@@ -68,6 +71,7 @@ func (c *Client) connect(r *clientRun, info *connectionInfo, options Options, at
 					err = conn.WriteMessage(websocket.BinaryMessage, packet.NewEnterPacket(info.uid, info.buvid, info.roomID, info.token))
 				}
 				if err == nil && r.ctx.Err() == nil {
+					c.setRunStatus(r, "authenticating", nil, host, time.Time{})
 					return conn, nil
 				}
 				r.closeConn()
@@ -77,7 +81,7 @@ func (c *Client) connect(r *clientRun, info *connectionInfo, options Options, at
 			return nil, r.ctx.Err()
 		}
 		log.WithError(err).WithFields(log.Fields{"room": info.roomID, "retry_delay": delay.String(), "attempt": *attempt}).Warn("danmaku connection failed; retrying")
-		if err := waitRetry(r.ctx, *delay); err != nil {
+		if err := c.waitRetry(r, info.host, err, *delay); err != nil {
 			return nil, err
 		}
 		*delay = nextReconnectDelay(*delay, options.ReconnectInterval)
@@ -144,28 +148,32 @@ func nextReconnectDelay(delay, initial time.Duration) time.Duration {
 	return delay * 2
 }
 
-func waitRetry(ctx context.Context, delay time.Duration) error {
-	timer := time.NewTimer(delay)
+func (c *Client) waitRetry(r *clientRun, host string, cause error, delay time.Duration) error {
+	retryAt := time.Now().Add(delay)
+	c.setRunStatus(r, "retrying", cause, host, retryAt)
+	timer := time.NewTimer(time.Until(retryAt))
 	defer timer.Stop()
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
+	case <-r.ctx.Done():
+		return r.ctx.Err()
 	case <-timer.C:
 		return nil
 	}
 }
 func (c *Client) runLoop(r *clientRun, conn *websocket.Conn, info connectionInfo, options Options, attempt int, delay time.Duration) {
-	defer c.finish(r)
+	var runErr error
+	defer func() { c.finish(r, runErr) }()
+	dispatchCtx, stopDispatch := context.WithCancel(r.ctx)
 	events := make(chan notification, options.EventBufferCapacity)
 	dispatchDone := make(chan struct{})
 	go func() {
 		defer close(dispatchDone)
 		for {
 			select {
-			case <-r.ctx.Done():
+			case <-dispatchCtx.Done():
 				return
 			case p := <-events:
-				if r.ctx.Err() != nil {
+				if dispatchCtx.Err() != nil {
 					return
 				}
 				if err := c.handleNotification(p.body, p.cmd); err != nil {
@@ -174,10 +182,10 @@ func (c *Client) runLoop(r *clientRun, conn *websocket.Conn, info connectionInfo
 			}
 		}
 	}()
-	defer func() { r.cancel(); <-dispatchDone }()
+	defer func() { stopDispatch(); <-dispatchDone }()
 	for {
 		connectedAt := time.Now()
-		err := c.readSession(r, conn, options, events)
+		err := c.readSession(r, conn, info.host, options, events)
 		r.closeConn()
 		if r.ctx.Err() != nil {
 			return
@@ -186,17 +194,18 @@ func (c *Client) runLoop(r *clientRun, conn *websocket.Conn, info connectionInfo
 			delay = options.ReconnectInterval
 		}
 		log.WithError(err).WithFields(log.Fields{"room": info.roomID, "remote": conn.RemoteAddr().String(), "retry_delay": delay.String()}).Warn("danmaku session ended; reconnecting")
-		if waitRetry(r.ctx, delay) != nil {
+		if c.waitRetry(r, info.host, err, delay) != nil {
 			return
 		}
 		delay = nextReconnectDelay(delay, options.ReconnectInterval)
 		conn, err = c.connect(r, &info, options, &attempt, &delay, true)
 		if err != nil {
+			runErr = err
 			return
 		}
 	}
 }
-func (c *Client) readSession(r *clientRun, conn *websocket.Conn, options Options, events chan<- notification) error {
+func (c *Client) readSession(r *clientRun, conn *websocket.Conn, host string, options Options, events chan<- notification) error {
 	ctx, cancel := context.WithCancel(r.ctx)
 	heartbeatDone := make(chan struct{})
 	go func() {
@@ -245,21 +254,28 @@ func (c *Client) readSession(r *clientRun, conn *websocket.Conn, options Options
 					continue
 				}
 				code := gjson.GetBytes(p.Body, "code")
-				if code.Type != gjson.Number {
+				if code.Type != gjson.Number || code.Float() != float64(code.Int()) {
 					continue
 				}
 				if code.Int() != 0 {
-					return fmt.Errorf("room authentication rejected: code=%d", code.Int())
+					return &authenticationError{code: code.Int()}
 				}
 				active = true
+				c.setRunStatus(r, "connected", nil, host, time.Time{})
 			case packet.HeartBeatResponse:
-				active = active || len(p.Body) >= 4
+				if len(p.Body) >= 4 {
+					active = true
+					c.setRunStatus(r, "connected", nil, host, time.Time{})
+				}
 			case packet.Notification:
 				cmd := parseCmd(p.Body)
 				if cmd == "" {
 					continue
 				}
 				active = true
+				// Publish before enqueueing: callbacks and a full event queue
+				// must not hide an already confirmed connection.
+				c.setRunStatus(r, "connected", nil, host, time.Time{})
 				select {
 				case events <- notification{body: p.Body, cmd: cmd}:
 				case <-ctx.Done():

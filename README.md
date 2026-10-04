@@ -79,6 +79,21 @@ V2 礼物可能包含多个开盒结果；库按上游顺序逐个调用 `OnGift
 - 允许并发注册回调，自定义回调 panic 不影响后续回调。手动调用 `Handle` / `HandlePacket` 在调用者 goroutine 同步执行。
 - 公开配置字段应在启动前设置。`SetCookie`、`SetHost` 为并发安全的配置入口，下次启动生效。
 
+`Status()` 可并发读取当前连接状态快照，适合管理台监控：
+
+```go
+status := c.Status()
+fmt.Println(status.State, status.Host, status.Error)
+if status.State == "retrying" {
+    fmt.Println("next retry:", status.RetryAt)
+}
+```
+
+状态包括 `idle`、`connecting`、`authenticating`、`connected`、`retrying`、`stopped`
+和 `error`。入房包发送成功仅表示 `authenticating`，收到有效认证、心跳或通知后才会
+显示 `connected`。错误为不包含凭据的摘要；主机 URL 去除了认证、查询和片段信息。
+`RetryAt` 只在等待重试时有效；`UpdatedAt` 表示状态变化时间，不会随读取或心跳刷新。
+
 ```go
 c, err := client.NewClientWithOptions(732, client.Options{
     HeartbeatInterval:   30 * time.Second,
