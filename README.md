@@ -1,111 +1,141 @@
 # blivedm-go
 
-bilibili 直播弹幕 golang 库
+Bilibili 直播弹幕 Go 库，支持传统 JSON 和新版 Protobuf 消息。Go 1.20 或更高版本。
 
 ## 安装
-```shell
+
+```sh
 go get github.com/tursom/blivedm-go
 ```
 
 ## 快速开始
 
-### 基础使用
-
-该库支持以下几种基本事件，并且支持监听自定义事件。
-- 弹幕
-- 醒目留言
-- 礼物
-- 上舰
-- 开播
-- USER_TOAST_MSG
-
 ```go
 package main
 
 import (
-	"fmt"
-	"github.com/tursom/blivedm-go/client"
-	"github.com/tursom/blivedm-go/message"
-	_ "github.com/tursom/blivedm-go/utils"
-	log "github.com/sirupsen/logrus"
-	"github.com/tidwall/gjson"
+    "context"
+    "errors"
+    "fmt"
+    "log"
+    "os"
+    "os/signal"
+
+    "github.com/tursom/blivedm-go/client"
+    "github.com/tursom/blivedm-go/message"
 )
 
 func main() {
-	log.SetLevel(log.DebugLevel)
-	c := client.NewClient(732) // 房间号
-	c.SetCookie("") // 由于 B站 反爬虫改版，现在需要使用已登陆账号的 Cookie 才可以正常获取弹幕。如果不设置 Cookie，获取到的弹幕昵称、UID都被限制。还有可能弹幕限流，无法获取到全部内容。
-	//弹幕事件
-	c.OnDanmaku(func(danmaku *message.Danmaku) {
-		if danmaku.Type == message.EmoticonDanmaku {
-			fmt.Printf("[弹幕表情] %s：表情URL： %s\n", danmaku.Sender.Uname, danmaku.Emoticon.Url)
-		} else {
-			fmt.Printf("[弹幕] %s：%s\n", danmaku.Sender.Uname, danmaku.Content)
-		}
-	})
-	// 醒目留言事件
-	c.OnSuperChat(func(superChat *message.SuperChat) {
-		fmt.Printf("[SC|%d元] %s: %s\n", superChat.Price, superChat.UserInfo.Uname, superChat.Message)
-	})
-	// 礼物事件
-	c.OnGift(func(gift *message.Gift) {
-		if gift.CoinType == "gold" {
-			fmt.Printf("[礼物] %s 的 %s %d 个 共%.2f元\n", gift.Uname, gift.GiftName, gift.Num, float64(gift.Num*gift.Price)/1000)
-		}
-	})
-	// 上舰事件
-	c.OnGuardBuy(func(guardBuy *message.GuardBuy) {
-		fmt.Printf("[大航海] %s 开通了 %d 等级的大航海，金额 %d 元\n", guardBuy.Username, guardBuy.GuardLevel, guardBuy.Price/1000)
-	})
-	// 监听自定义事件
-	c.RegisterCustomEventHandler("STOP_LIVE_ROOM_LIST", func(s string) {
-		data := gjson.Get(s, "data").String()
-		fmt.Printf("STOP_LIVE_ROOM_LIST: %s\n", data)
-	})
+    ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+    defer cancel()
 
-	err := c.Start()
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Println("started")
-	// 需要自行阻塞什么方法都可以
-	select {}
+    c := client.NewClient(732)
+    c.SetCookie(os.Getenv("BILIBILI_COOKIE"))
+    c.OnDanmaku(func(d *message.Danmaku) {
+        fmt.Printf("[弹幕] %s：%s\n", d.Sender.Uname, d.Content)
+    })
+    c.OnGift(func(g *message.Gift) {
+        fmt.Printf("[礼物] %s：%s × %d\n", g.Uname, g.GiftName, g.Num)
+    })
+    if err := c.StartContext(ctx); err != nil {
+        if !errors.Is(err, context.Canceled) {
+            log.Fatal(err)
+        }
+        return
+    }
+    c.Wait()
 }
-
 ```
 
-#### Cookie相关
+Cookie 建议包含 `SESSDATA`、`bili_jct`、`buvid3` 和 `DedeUserID`。未登录时，上游可能隐藏用户信息或限制弹幕。不要把 Cookie 写入源码或日志。
 
-截至2025年06月25日，必要的cookie为`buvid3`, `SESSDATA`, `bili_jct`
+## 协议支持
 
-### 进阶使用
+消息字段与 `danmuji-next/crates/blivedm` 参考实现同步：
 
-#### 监听自定义事件
+| 命令 | 回调 / 模型 |
+| --- | --- |
+| `DANMU_MSG`（含命令后缀、`dm_v2`） | `OnDanmaku`，用户、头像、表情、勋章、回复信息 |
+| `SEND_GIFT`、`SEND_GIFT_V2` | `OnGift`，包括盲盒及批次中的每个结果 |
+| `SUPER_CHAT_MESSAGE` | `OnSuperChat` |
+| `GUARD_BUY` | `OnGuardBuy` |
+| `USER_TOAST_MSG`、`USER_TOAST_MSG_V2` | `OnUserToast` |
+| `INTERACT_WORD`、`INTERACT_WORD_V2` | `OnInteractWord` |
+| `ONLINE_RANK_COUNT` | `OnOnlineRankCount` |
+| `ONLINE_RANK_V2` | `OnOnlineRankV2` |
+| `ONLINE_RANK_V3` | `OnOnlineRankV3` |
+| `LIVE`、`PREPARING` | `OnLiveStart`、`OnLiveStop` |
+| 任意通知，包括未建模命令 | `OnRawEvent` 或自定义处理器 |
 
-通过自定义监听事件，可以支持更多事件处理。  
-其中，`cmd`为要监听的`cmd`名（下附常见`cmd`名）， `handler`为接收事件消息（字符串的JSON）的函数  
-**注意**  
-优先执行自定义 eventHandler ，会**覆盖库内自带的 handler**  
-例如，如果你`RegisterCustomEventHandler("DANMU_MSG", ...`  
-那么你使用`OnDanmaku`则不会再生效
+V2 礼物可能包含多个开盒结果；库按上游顺序逐个调用 `OnGift`，不会只保留第一个结果。V3 榜单使用单独回调，不会转换为 V2 事件。
+
+## 生命周期与回调
+
+- `Start()` 保留原接口；`StartContext(ctx)` 让初始化、连接、重连和运行都受同一 context 控制。返回成功表示已发送入房包，认证应答由后台处理。
+- `Stop()` 可重复调用，会取消 HTTP 初始化、重连等待并关闭 WebSocket，解除阻塞的读取。
+- `Done()` / `Wait()` 用于等待网络任务及当前回调退出。停止完成后可以再次启动。运行中重复启动返回 `client.ErrAlreadyStarted`。
+- **回调改为顺序执行**，网络接收通过有界队列分发，默认容量 256。队列满时施加背压，不为每条消息无限创建 goroutine。回调应及时返回；耗时工作交给调用方管理的队列。
+- 可以在回调里调用 `Stop()`，但不要在回调里调用 `Wait()` 或等待 `Done()`。停止时尚未处理的队列消息会被放弃。
+- 允许并发注册回调，自定义回调 panic 不影响后续回调。手动调用 `Handle` / `HandlePacket` 在调用者 goroutine 同步执行。
+- 公开配置字段应在启动前设置。`SetCookie`、`SetHost` 为并发安全的配置入口，下次启动生效。
+
 ```go
-func (c *Client) RegisterCustomEventHandler(cmd string, handler func(s string))
-```
-```go
-// 监听自定义事件
-c.RegisterCustomEventHandler("STOP_LIVE_ROOM_LIST", func(s string) {
-    data := gjson.Get(s, "data").String()
-    fmt.Printf(data)
+c, err := client.NewClientWithOptions(732, client.Options{
+    HeartbeatInterval:   30 * time.Second,
+    HandshakeTimeout:    10 * time.Second,
+    JoinTimeout:         10 * time.Second,
+    ReadIdleTimeout:     75 * time.Second,
+    WriteTimeout:       10 * time.Second,
+    ReconnectInterval:   3 * time.Second,
+    EventBufferCapacity: 256,
 })
 ```
 
-### 常见 CMD
-注：来自blivedm
-```python
-cmd = (
-        'INTERACT_WORD', 'ROOM_BANNER', 'ROOM_REAL_TIME_MESSAGE_UPDATE', 'NOTICE_MSG', 'COMBO_SEND',
-        'COMBO_END', 'ENTRY_EFFECT', 'WELCOME_GUARD', 'WELCOME', 'ROOM_RANK', 'ACTIVITY_BANNER_UPDATE_V2',
-        'PANEL', 'SUPER_CHAT_MESSAGE_JPN', 'USER_TOAST_MSG', 'ROOM_BLOCK_MSG', 'LIVE', 'PREPARING',
-        'room_admin_entrance', 'ROOM_ADMINS', 'ROOM_CHANGE'
-    )
+配置字段为零时使用默认值，负数返回错误。自动重连会轮换服务端返回的主机并保留 WSS 端口。`SetHost` 接受域名或完整 `ws://` / `wss://` URL。HTTP / API 错误明确返回；风控码 `±352` 和空主机列表使用参考实现的默认主机降级。
+
+## 自定义与原始事件
+
+```go
+// 观察所有通知，不覆盖内置回调。cmd 保留冒号参数；data 必须视为只读。
+c.OnRawEvent(func(cmd string, data []byte) {
+    fmt.Printf("%s: %s\n", cmd, data)
+})
+
+// 自定义处理器优先执行，并覆盖同命令的内置解析和回调。
+c.RegisterCustomEventHandler("STOP_LIVE_ROOM_LIST", func(raw string) {
+    fmt.Println(raw)
+})
+
+// 移除覆盖，恢复内置处理。
+c.RegisterCustomEventHandler("DANMU_MSG", nil)
+```
+
+自定义命令按冒号前的名称匹配。原始事件观察器在自定义和内置处理器之前执行，包括未知命令。
+
+## 独立解析与错误处理
+
+旧的 `Parse([]byte)` 方法仍可使用。需要处理错误时，使用 `ParseJSON([]byte) error`；V2 礼物批次使用 `message.ParseGiftsV2`。`client.HandlePacket` 也可返回解析错误。
+
+`packet.Decode` 校验一个包；`packet.DecodeFrame` 处理多包 WebSocket 帧并递归展开 zlib / Brotli。解码限制默认为累计解压 16 MiB、8 层嵌套、65,536 个包，可通过 `packet.Decoder` 配置。旧的 `DecodePacket`、`Slice`、`Parse` 保留兼容接口，失败返回零值或 nil，不再伪造心跳响应。
+
+HTTP 辅助函数新增对应的 `Context` 版本；HTTP 非 2xx 返回 `*api.HTTPError`，已校验的业务错误返回 `*api.APIError`。WBI 密钥缓存支持并发共享与取消等待。
+
+## 开发验证
+
+```sh
+go test ./...
+go test -race ./...
+go vet ./...
+go test ./packet ./message ./client -run '^$' -bench . -benchmem
+go test ./packet -run '^$' -fuzz FuzzDecodeFrame -fuzztime 10s
+```
+
+测试使用本地 HTTP/WebSocket 服务及合成协议数据，不需要账号或线上直播间。
+
+### Protobuf 维护
+
+新版事件的字段定义在 `pb/events.proto`，生成文件为 `pb/events.pb.go`；原有 `pb/dmv2.pb.go` 保留兼容。使用已安装的 `protoc` 和 `protoc-gen-go`，在仓库根目录重新生成：
+
+```sh
+protoc --go_out=. --go_opt=paths=source_relative pb/events.proto
 ```

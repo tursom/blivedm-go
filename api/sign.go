@@ -1,52 +1,68 @@
 package api
 
 import (
-	"bytes"
+	"context"
 	"crypto/md5"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
-// https://github.com/SocialSisterYi/bilibili-API-collect/blob/master/docs/misc/sign/wbi.md
+const wbiCacheTTL = time.Hour
 
-var wbiKeys WbiKeys
+var defaultWbiCache wbiCache
+
+// 保持 WbiKeys 可按值复制；同步只保护方法内的读取和写入。
+var wbiInstanceMu sync.Mutex
 
 func WbiKeysSignString(u string) (string, error) {
+	return WbiKeysSignStringContext(context.Background(), u)
+}
+
+func WbiKeysSignStringContext(ctx context.Context, u string) (string, error) {
 	parsedURL, err := url.Parse(u)
 	if err != nil {
 		return "", err
 	}
-
-	err = wbiKeys.Sign(parsedURL)
-	if err != nil {
+	if err := WbiKeysSignContext(ctx, parsedURL); err != nil {
 		return "", err
 	}
-
 	return parsedURL.String(), nil
 }
 
-// Sign 为链接签名
 func WbiKeysSign(u *url.URL) error {
-	return wbiKeys.Sign(u)
+	return WbiKeysSignContext(context.Background(), u)
 }
 
-// Update 无视过期时间更新
-func WbiKeysUpdate() error {
-	return wbiKeys.Update()
-}
-
-func WbiKeysGet() (wk WbiKeys, err error) {
-	if err = wk.update(false); err != nil {
-		return WbiKeys{}, err
+func WbiKeysSignContext(ctx context.Context, u *url.URL) error {
+	if u == nil {
+		return errors.New("cannot sign a nil URL")
 	}
-	return wbiKeys, nil
+	keys, err := WbiKeysGetContext(ctx)
+	if err != nil {
+		return err
+	}
+	return signWbiURL(u, keys.Mixin, time.Now().Unix())
+}
+
+// WbiKeysUpdate 无视过期时间刷新共享密钥。
+func WbiKeysUpdate() error { return WbiKeysUpdateContext(context.Background()) }
+
+func WbiKeysUpdateContext(ctx context.Context) error {
+	_, err := defaultWbiCache.get(ctx, true)
+	return err
+}
+
+func WbiKeysGet() (WbiKeys, error) { return WbiKeysGetContext(context.Background()) }
+
+func WbiKeysGetContext(ctx context.Context) (WbiKeys, error) {
+	return defaultWbiCache.get(ctx, false)
 }
 
 var mixinKeyEncTab = [...]int{
@@ -60,18 +76,9 @@ var mixinKeyEncTab = [...]int{
 	57, 62, 11, 36, 20, 34, 44, 52,
 }
 
-func removeUnwantedChars(v url.Values, chars ...byte) url.Values {
-	b := []byte(v.Encode())
-	for _, c := range chars {
-		b = bytes.ReplaceAll(b, []byte{c}, nil)
-	}
-	s, err := url.ParseQuery(string(b))
-	if err != nil {
-		panic(err)
-	}
-	return s
-}
+var wbiFilter = strings.NewReplacer("!", "", "'", "", "(", "", ")", "", "*", "")
 
+// Nav 是 WBI 密钥接口的响应。
 type Nav struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -81,11 +88,10 @@ type Nav struct {
 			ImgUrl string `json:"img_url"`
 			SubUrl string `json:"sub_url"`
 		} `json:"wbi_img"`
-
-		// ......
 	} `json:"data"`
 }
 
+// WbiKeys 可按值复制。调用方法期间不要直接修改其导出字段。
 type WbiKeys struct {
 	Img            string
 	Sub            string
@@ -93,85 +99,156 @@ type WbiKeys struct {
 	lastUpdateTime time.Time
 }
 
-// Sign 为链接签名
-func (wk *WbiKeys) Sign(u *url.URL) (err error) {
-	if err = wk.update(false); err != nil {
+func (wk *WbiKeys) Sign(u *url.URL) error {
+	return wk.SignContext(context.Background(), u)
+}
+
+func (wk *WbiKeys) SignContext(ctx context.Context, u *url.URL) error {
+	if wk == nil || u == nil {
+		return errors.New("cannot sign with nil keys or URL")
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
+	wbiInstanceMu.Lock()
+	keys := *wk
+	wbiInstanceMu.Unlock()
+	if keys.Mixin == "" || time.Since(keys.lastUpdateTime) >= wbiCacheTTL {
+		var err error
+		keys, err = WbiKeysGetContext(ctx)
+		if err != nil {
+			return err
+		}
+		wbiInstanceMu.Lock()
+		*wk = keys
+		wbiInstanceMu.Unlock()
+	}
+	return signWbiURL(u, keys.Mixin, time.Now().Unix())
+}
 
-	values := u.Query()
+func (wk *WbiKeys) Update() error { return wk.UpdateContext(context.Background()) }
 
-	values = removeUnwantedChars(values, '!', '\'', '(', ')', '*') // 必要性存疑?
-
-	values.Set("wts", strconv.FormatInt(time.Now().Unix(), 10))
-
-	// [url.Values.Encode] 内会对参数排序,
-	// 且遍历 map 时本身就是无序的
-	hash := md5.Sum([]byte(values.Encode() + wk.Mixin)) // Calculate w_rid
-	values.Set("w_rid", hex.EncodeToString(hash[:]))
-	u.RawQuery = values.Encode()
+func (wk *WbiKeys) UpdateContext(ctx context.Context) error {
+	if wk == nil {
+		return errors.New("cannot update nil WBI keys")
+	}
+	keys, err := defaultWbiCache.get(ctx, true)
+	if err != nil {
+		return err
+	}
+	wbiInstanceMu.Lock()
+	*wk = keys
+	wbiInstanceMu.Unlock()
 	return nil
 }
 
-// Update 无视过期时间更新
-func (wk *WbiKeys) Update() (err error) {
-	return wk.update(true)
-}
-
-// update 按需更新
-func (wk *WbiKeys) update(purge bool) error {
-	if !purge && time.Since(wk.lastUpdateTime) < time.Hour {
-		return nil
-	}
-
-	// 测试下来不用修改 header 也能过
-	resp, err := http.Get("https://api.bilibili.com/x/web-interface/nav")
+func signWbiURL(u *url.URL, mixin string, timestamp int64) error {
+	values, err := url.ParseQuery(u.RawQuery)
 	if err != nil {
-		return err
+		return fmt.Errorf("invalid WBI query: %w", err)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return err
+	values.Del("w_rid")
+	values.Set("wts", strconv.FormatInt(timestamp, 10))
+	for key, entries := range values {
+		for i, entry := range entries {
+			entries[i] = wbiFilter.Replace(entry)
+		}
+		values[key] = entries
 	}
-
-	nav := Nav{}
-	err = json.Unmarshal(body, &nav)
-	if err != nil {
-		return err
-	}
-
-	if nav.Code != 0 && nav.Code != -101 { // -101 未登录时也会返回两个 key
-		return fmt.Errorf("unexpected code: %d, message: %s", nav.Code, nav.Message)
-	}
-	img := nav.Data.WbiImg.ImgUrl
-	sub := nav.Data.WbiImg.SubUrl
-	if img == "" || sub == "" {
-		return fmt.Errorf("empty image or sub url: %s", body)
-	}
-
-	// https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png
-	imgParts := strings.Split(img, "/")
-	subParts := strings.Split(sub, "/")
-
-	// 7cd084941338484aae1ad9425b84077c.png
-	imgPng := imgParts[len(imgParts)-1]
-	subPng := subParts[len(subParts)-1]
-
-	// 7cd084941338484aae1ad9425b84077c
-	wbiKeys.Img = strings.TrimSuffix(imgPng, ".png")
-	wbiKeys.Sub = strings.TrimSuffix(subPng, ".png")
-
-	wbiKeys.mixin()
-	wbiKeys.lastUpdateTime = time.Now()
+	// WBI 使用 RFC 3986 编码：空格是 %20，而不是表单编码的 +。
+	query := strings.ReplaceAll(values.Encode(), "+", "%20")
+	hash := md5.Sum([]byte(query + mixin))
+	u.RawQuery = query + "&w_rid=" + hex.EncodeToString(hash[:])
 	return nil
 }
 
-func (wk *WbiKeys) mixin() {
+type wbiRefresh struct {
+	done chan struct{}
+	keys WbiKeys
+	err  error
+}
+
+type wbiCache struct {
+	mu      sync.Mutex
+	keys    WbiKeys
+	pending *wbiRefresh
+}
+
+func (cache *wbiCache) get(ctx context.Context, force bool) (WbiKeys, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return WbiKeys{}, err
+		}
+		cache.mu.Lock()
+		if !force && cache.keys.Mixin != "" && time.Since(cache.keys.lastUpdateTime) < wbiCacheTTL {
+			keys := cache.keys
+			cache.mu.Unlock()
+			return keys, nil
+		}
+		if pending := cache.pending; pending != nil {
+			cache.mu.Unlock()
+			select {
+			case <-ctx.Done():
+				return WbiKeys{}, ctx.Err()
+			case <-pending.done:
+				// 发起刷新者的取消不应取消其他仍有效的调用。
+				if errors.Is(pending.err, context.Canceled) || errors.Is(pending.err, context.DeadlineExceeded) {
+					continue
+				}
+				return pending.keys, pending.err
+			}
+		}
+		pending := &wbiRefresh{done: make(chan struct{})}
+		cache.pending = pending
+		cache.mu.Unlock()
+
+		pending.keys, pending.err = fetchWbiKeys(ctx)
+		cache.mu.Lock()
+		if pending.err == nil {
+			cache.keys = pending.keys
+		}
+		cache.pending = nil
+		close(pending.done)
+		cache.mu.Unlock()
+		return pending.keys, pending.err
+	}
+}
+
+func fetchWbiKeys(ctx context.Context) (WbiKeys, error) {
+	var nav Nav
+	if err := GetJsonWithHeaderContext(ctx, "https://api.bilibili.com/x/web-interface/nav", liveHeaders(""), &nav); err != nil {
+		return WbiKeys{}, err
+	}
+	if nav.Code != 0 && nav.Code != -101 {
+		return WbiKeys{}, apiError(nav.Code, nav.Message, "")
+	}
+	img, err := wbiKeyFromURL(nav.Data.WbiImg.ImgUrl)
+	if err != nil {
+		return WbiKeys{}, err
+	}
+	sub, err := wbiKeyFromURL(nav.Data.WbiImg.SubUrl)
+	if err != nil {
+		return WbiKeys{}, err
+	}
+	combined := img + sub
 	var mixin [32]byte
-	wbi := wk.Img + wk.Sub
-	for i := range mixin { // for i := 0; i < len(mixin); i++ {
-		mixin[i] = wbi[mixinKeyEncTab[i]]
+	for i := range mixin {
+		mixin[i] = combined[mixinKeyEncTab[i]]
 	}
-	wk.Mixin = string(mixin[:])
+	return WbiKeys{Img: img, Sub: sub, Mixin: string(mixin[:]), lastUpdateTime: time.Now()}, nil
+}
+
+func wbiKeyFromURL(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("invalid WBI key URL: %w", err)
+	}
+	key := strings.TrimSuffix(path.Base(u.Path), ".png")
+	if len(key) != 32 {
+		return "", errors.New("invalid WBI key length")
+	}
+	if _, err := hex.DecodeString(key); err != nil {
+		return "", fmt.Errorf("invalid WBI key: %w", err)
+	}
+	return key, nil
 }

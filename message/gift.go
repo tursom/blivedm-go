@@ -1,43 +1,53 @@
 package message
 
 import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"strings"
+
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
-	"github.com/tursom/blivedm-go/utils"
 )
 
 // 礼物消息结构体
 type Gift struct {
-	Action            string      `json:"action"`               // 操作类型
-	BatchComboId      string      `json:"batch_combo_id"`       // 批量组合ID
-	BatchComboSend    interface{} `json:"batch_combo_send"`     // 批量组合发送信息
-	BeatId            string      `json:"beatId"`               // Beat ID
-	BizSource         string      `json:"biz_source"`           // 业务来源
-	BlindGift         interface{} `json:"blind_gift"`           // 盲盒礼物信息
-	BroadcastId       int         `json:"broadcast_id"`         // 广播ID
-	CoinType          string      `json:"coin_type"`            // 币种类型
-	ComboResourcesId  int         `json:"combo_resources_id"`   // 组合资源ID
-	ComboSend         interface{} `json:"combo_send"`           // 组合发送信息
-	ComboStayTime     int         `json:"combo_stay_time"`      // 组合停留时间
-	ComboTotalCoin    int         `json:"combo_total_coin"`     // 组合总硬币数
-	CritProb          int         `json:"crit_prob"`            // 批判概率
-	Demarcation       int         `json:"demarcation"`          // 分界线
-	DiscountPrice     int         `json:"discount_price"`       // 折扣价格
-	Dmscore           int         `json:"dmscore"`              // DM分数
-	Draw              int         `json:"draw"`                 // 抽奖
-	Effect            int         `json:"effect"`               // 效果
-	EffectBlock       int         `json:"effect_block"`         // 效果块
-	Face              string      `json:"face"`                 // 头像URL
-	FloatScResourceId int         `json:"float_sc_resource_id"` // 浮动资源ID
-	GiftId            int         `json:"giftId"`               // 礼物ID
-	GiftName          string      `json:"giftName"`             // 礼物名称
-	GiftType          int         `json:"giftType"`             // 礼物类型
-	Gold              int         `json:"gold"`                 // 金币数量
-	GuardLevel        int         `json:"guard_level"`          // 守护等级
-	IsFirst           bool        `json:"is_first"`             // 是否首次赠送
-	IsSpecialBatch    int         `json:"is_special_batch"`     // 是否特殊批量
-	Magnification     float64     `json:"magnification"`        // 放大倍数
-	MedalInfo         struct {
+	GiftInfo           *GiftInfo   `json:"gift_info,omitempty"`
+	GiftIcon           string      `json:"-"`
+	EffectId           *uint64     `json:"-"`
+	SenderUinfo        *UserInfo   `json:"sender_uinfo,omitempty"`
+	ShowBatchComboSend *bool       `json:"show_batch_combo_send,omitempty"`
+	BlindGiftInfo      *BlindGift  `json:"-"`
+	Action             string      `json:"action"`               // 操作类型
+	BatchComboId       string      `json:"batch_combo_id"`       // 批量组合ID
+	BatchComboSend     interface{} `json:"batch_combo_send"`     // 批量组合发送信息
+	BeatId             string      `json:"beatId"`               // Beat ID
+	BizSource          string      `json:"biz_source"`           // 业务来源
+	BlindGift          interface{} `json:"blind_gift"`           // 盲盒礼物信息
+	BroadcastId        int         `json:"broadcast_id"`         // 广播ID
+	CoinType           string      `json:"coin_type"`            // 币种类型
+	ComboResourcesId   int         `json:"combo_resources_id"`   // 组合资源ID
+	ComboSend          interface{} `json:"combo_send"`           // 组合发送信息
+	ComboStayTime      int         `json:"combo_stay_time"`      // 组合停留时间
+	ComboTotalCoin     int         `json:"combo_total_coin"`     // 组合总硬币数
+	CritProb           int         `json:"crit_prob"`            // 批判概率
+	Demarcation        int         `json:"demarcation"`          // 分界线
+	DiscountPrice      int         `json:"discount_price"`       // 折扣价格
+	Dmscore            int         `json:"dmscore"`              // DM分数
+	Draw               int         `json:"draw"`                 // 抽奖
+	Effect             int         `json:"effect"`               // 效果
+	EffectBlock        int         `json:"effect_block"`         // 效果块
+	Face               string      `json:"face"`                 // 头像URL
+	FloatScResourceId  int         `json:"float_sc_resource_id"` // 浮动资源ID
+	GiftId             int         `json:"giftId"`               // 礼物ID
+	GiftName           string      `json:"giftName"`             // 礼物名称
+	GiftType           int         `json:"giftType"`             // 礼物类型
+	Gold               int         `json:"gold"`                 // 金币数量
+	GuardLevel         int         `json:"guard_level"`          // 守护等级
+	IsFirst            bool        `json:"is_first"`             // 是否首次赠送
+	IsSpecialBatch     int         `json:"is_special_batch"`     // 是否特殊批量
+	Magnification      float64     `json:"magnification"`        // 放大倍数
+	MedalInfo          struct {
 		AnchorRoomid     int    `json:"anchor_roomid"`      // 主播房间ID
 		AnchorUname      string `json:"anchor_uname"`       // 主播用户名
 		GuardLevel       int    `json:"guard_level"`        // 守护等级
@@ -111,12 +121,120 @@ type ComboSend struct {
 	Uname      string      `json:"uname"`       // 用户名
 }
 
-// 解析礼物消息数据
+// GiftInfo contains display resources. A present zero EffectId disables effects.
+type GiftInfo struct {
+	ImgBasic string  `json:"img_basic"`
+	Webp     string  `json:"webp"`
+	Gif      string  `json:"gif"`
+	EffectId *uint64 `json:"effect_id"`
+}
+
+// BlindGift separates the revealed gift value from the paid box cost.
+type BlindGift struct {
+	BlindGiftConfigId uint64 `json:"blind_gift_config_id"`
+	From              uint64 `json:"from"`
+	GiftAction        string `json:"gift_action"`
+	GiftTipPrice      uint64 `json:"gift_tip_price"`
+	OriginalGiftId    uint64 `json:"original_gift_id"`
+	OriginalGiftName  string `json:"original_gift_name"`
+	OriginalGiftPrice uint64 `json:"original_gift_price"`
+}
+
 func (g *Gift) Parse(data []byte) {
-	sb := utils.BytesToString(data)
-	sd := gjson.Get(sb, "data").String()
-	err := utils.UnmarshalStr(sd, g)
-	if err != nil {
-		log.Error("parse Gift failed")
+	if err := g.ParseJSON(data); err != nil {
+		log.WithError(err).Error("parse gift failed")
 	}
+}
+
+// ParseJSON parses a legacy SEND_GIFT notification. Use ParseGiftsV2 for batches.
+func (g *Gift) ParseJSON(data []byte) error {
+	data = normalizeIntFlags(data, "data.medal_info.is_lighted")
+	data = normalizeBoolFlags(data, "data.show_batch_combo_send")
+	var next Gift
+	if err := decodeData(data, &next); err != nil {
+		return err
+	}
+	if gjson.GetBytes(data, "data.pb").Exists() {
+		return fmt.Errorf("SEND_GIFT_V2 may contain multiple gifts; use ParseGiftsV2")
+	}
+	if err := requireJSONFields(data, "data.giftId", "data.num", "data.price", "data.total_coin", "data.coin_type", "data.timestamp"); err != nil {
+		return err
+	}
+	if !gjson.GetBytes(data, "data.uid").Exists() && (next.SenderUinfo == nil || next.SenderUinfo.Uid == 0) {
+		return fmt.Errorf("missing gift sender uid")
+	}
+	if next.CoinType != "gold" && next.CoinType != "silver" {
+		return fmt.Errorf("unsupported gift coin type %q", next.CoinType)
+	}
+	fields := gjson.GetBytes(data, "data")
+	if err := requireUnsignedFields(fields, "giftId", "num", "price", "total_coin"); err != nil {
+		return err
+	}
+	if err := requireSignedField(fields, "timestamp"); err != nil {
+		return err
+	}
+	if next.SenderUinfo == nil || next.SenderUinfo.Uid == 0 {
+		if err := requireUnsignedFields(fields, "uid"); err != nil {
+			return err
+		}
+	}
+	if next.Num < 0 || uint64(next.Num) > math.MaxUint32 || next.Price < 0 || next.TotalCoin < 0 {
+		return fmt.Errorf("invalid gift quantity or price")
+	}
+	if sender := next.SenderUinfo; sender != nil {
+		if sender.Uid != 0 {
+			uid, err := checkedInt(sender.Uid)
+			if err != nil {
+				return err
+			}
+			next.Uid = uid
+		}
+		next.Uname = firstNonEmpty(sender.Base.Name, next.Uname)
+		next.Face = firstNonEmpty(sender.Base.Face, next.Face)
+	}
+	if info := next.GiftInfo; info != nil {
+		next.GiftIcon = firstNonEmpty(info.ImgBasic, info.Webp, info.Gif)
+		next.EffectId = info.EffectId
+	}
+	blind := gjson.GetBytes(data, "data.blind_gift")
+	if blind.IsObject() {
+		var value BlindGift
+		if err := json.Unmarshal([]byte(blind.Raw), &value); err != nil {
+			return fmt.Errorf("decode blind gift: %w", err)
+		}
+		next.BlindGiftInfo = &value
+	}
+	if next.Action == "" {
+		next.Action = "投喂"
+	}
+	*g = next
+	return nil
+}
+
+func (g Gift) IsPaid() bool  { return g.CoinType == "gold" }
+func (g Gift) IsCombo() bool { return strings.TrimSpace(g.BatchComboId) != "" }
+
+// RevealedTotalCoin is the revealed gift value; TotalCoin remains the paid cost.
+func (g Gift) RevealedTotalCoin() uint64 {
+	if blind := g.BlindGiftInfo; blind != nil {
+		if g.Num <= 0 {
+			return 0
+		}
+		num := uint64(g.Num)
+		if blind.GiftTipPrice > math.MaxUint64/num {
+			return math.MaxUint64
+		}
+		return blind.GiftTipPrice * num
+	}
+	if g.TotalCoin <= 0 {
+		return 0
+	}
+	return uint64(g.TotalCoin)
+}
+
+func (g Gift) ValueCNYFen() uint64 {
+	if !g.IsPaid() {
+		return 0
+	}
+	return g.RevealedTotalCoin() / 10
 }

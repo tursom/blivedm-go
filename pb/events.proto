@@ -1,0 +1,175 @@
+syntax = "proto3";
+
+package blivedm.events;
+option go_package = "github.com/tursom/blivedm-go/pb";
+
+// Field numbers follow danmuji-next/crates/blivedm's protobuf decoders.
+// Separate from the legacy Dm schema so 64-bit user IDs are never truncated.
+message EventUserBase {
+  string name = 1;
+  string face = 2;
+  uint32 name_color = 3;
+  bool is_mystery = 4;
+}
+message EventGuard { uint32 level = 1; string expired_str = 2; }
+message EventWealth { uint32 level = 1; }
+message EventUserMedal {
+  string name = 1;
+  uint32 level = 2;
+  uint32 color = 6;
+  uint64 ruid = 10;
+  uint32 color_v2 = 18;
+}
+message EventUserInfo {
+  uint64 uid = 1;
+  EventUserBase base = 2;
+  EventUserMedal medal = 3;
+  EventWealth wealth = 4;
+  EventGuard guard = 6;
+}
+message EventGiftMedal {
+  uint64 ruid = 1;
+  uint32 level = 5;
+  string name = 6;
+  optional bool is_lighted = 11;
+}
+message EventBlindGift {
+  uint64 blind_gift_config_id = 1;
+  uint64 original_gift_id = 2;
+  string original_gift_name = 3;
+  uint64 from = 4;
+  string gift_action = 5;
+  uint64 original_gift_price = 6;
+  uint64 gift_tip_price = 7;
+}
+message EventGiftInfo {
+  string img_basic = 1;
+  string webp = 2;
+  optional uint64 effect_id = 3;
+  string gif = 5;
+}
+message EventGiftItem {
+  uint32 gift_id = 1;
+  string gift_name = 2;
+  uint32 num = 3;
+  uint64 price = 5;
+  uint64 total_coin = 7;
+  string coin_type = 8;
+  string tid = 9;
+  uint64 timestamp = 10;
+  uint64 super_batch_gift_num = 11;
+  string batch_combo_id = 12;
+  uint64 combo_resources_id = 13;
+  uint64 combo_total_coin = 14;
+  uint64 combo_stay_time = 15;
+  optional bool show_batch_combo_send = 17;
+  string action = 18;
+  EventGiftInfo gift_info = 35;
+  uint64 gift_tip_price = 36;
+}
+message EventSendGift {
+  uint64 uid = 1;
+  string uname = 2;
+  string face = 3;
+  uint64 guard_level = 5;
+  EventGiftMedal medal_info = 8;
+  EventBlindGift blind_gift = 9;
+  repeated EventGiftItem gift_items = 10;
+  EventUserInfo sender_uinfo = 15;
+}
+message EventInteractMedal {
+  uint64 ruid = 1;
+  uint32 level = 2;
+  string name = 3;
+  optional bool is_lighted = 8;
+  uint32 guard_level = 9;
+  uint32 room_id = 12;
+}
+message EventInteractWord {
+  uint64 uid = 1;
+  string username = 2;
+  uint32 msg_type = 5;
+  uint32 room_id = 6;
+  uint32 timestamp = 7;
+  uint64 timestamp_ms = 8;
+  EventInteractMedal medal = 9;
+  uint64 trigger_time = 15;
+  uint32 guard_type = 16;
+  EventUserInfo uinfo = 22;
+}
+message EventOnlineRankUser {
+  uint64 uid = 1;
+  string face = 2;
+  string score = 3;
+  string uname = 4;
+  uint32 rank = 5;
+  optional uint32 guard_level = 6;
+  optional bool is_mystery = 7;
+  EventUserInfo uinfo = 8;
+}
+message EventOnlineRank {
+  string rank_type = 1;
+  repeated EventOnlineRankUser online_list = 3;
+}
+
+message EventDmEmoticon {
+  string unique = 1;
+  string url = 2;
+  bool is_dynamic = 3;
+  int32 in_player_area = 4;
+  int32 bulge_display = 5;
+  int32 height = 6;
+  int32 width = 7;
+}
+message EventDmMedal {
+  int32 level = 1;
+  string name = 2;
+  string special = 3;
+  uint32 color = 4;
+  int32 icon_id = 5;
+  uint32 border_color = 6;
+  uint32 gradient_start_color = 7;
+  uint32 gradient_end_color = 8;
+  int32 privilege = 9;
+  int32 light = 10;
+}
+message EventDmLevel {
+  int32 level = 1;
+  uint32 color = 2;
+  string rank = 3;
+  int32 online_rank = 4;
+}
+message EventDmUser {
+  uint64 uid = 1;
+  string name = 2;
+  string name_color = 3;
+  string face = 4;
+  int32 vip = 5;
+  int32 svip = 6;
+  int32 rank = 7;
+  int32 mobile_verify = 8;
+  int32 lpl_status = 9;
+  int32 attr = 10;
+  EventDmMedal medal = 11;
+  EventDmLevel level = 12;
+  EventWealth wealth = 15;
+}
+message EventDmRoom { uint64 uid = 1; string name = 2; }
+message EventDm {
+  string id_str = 1;
+  int32 mode = 2;
+  int32 fontsize = 3;
+  uint32 color = 4;
+  string mid_hash = 5;
+  string content = 6;
+  int64 ctime = 7;
+  int32 weight = 8;
+  int64 rnd = 9;
+  int32 attr = 10;
+  int32 biz_scene = 11;
+  int32 dm_type = 13;
+  map<string, EventDmEmoticon> emoticons = 14;
+  bool send_from_me = 18;
+  EventDmUser user = 20;
+  EventDmRoom room = 21;
+}

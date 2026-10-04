@@ -1,10 +1,6 @@
 package packet
 
-import (
-	"encoding/json"
-
-	log "github.com/sirupsen/logrus"
-)
+import "encoding/json"
 
 type Enter struct {
 	UID      int    `json:"uid"`
@@ -19,19 +15,17 @@ type Enter struct {
 // NewEnterPacket 构造进入房间的包
 // uid 可以为 0, key 在使用 broadcastlv 服务器的时候不需要
 func NewEnterPacket(uid int, buvid string, roomID int, key string) []byte {
-	ent := &Enter{
+	ent := Enter{
 		UID:      uid,
 		Buvid:    buvid,
 		RoomID:   roomID,
-		ProtoVer: 3,
-		Platform: "danmuji",
+		ProtoVer: Brotli,
+		Platform: "web",
 		Type:     2,
 		Key:      key,
 	}
-	m, err := json.Marshal(ent)
-	if err != nil {
-		log.Error("NewEnterPacket JsonMarshal failed", err)
-	}
-	pkt := NewPlainPacket(RoomEnter, m)
+	// Enter contains only JSON-safe primitive fields.
+	body, _ := json.Marshal(ent)
+	pkt := NewPlainPacket(RoomEnter, body)
 	return pkt.Build()
 }

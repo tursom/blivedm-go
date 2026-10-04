@@ -1,187 +1,277 @@
 package client
 
 import (
-	"regexp"
+	"fmt"
 	"runtime/debug"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 	"github.com/tursom/blivedm-go/message"
 	"github.com/tursom/blivedm-go/packet"
-	"github.com/tursom/blivedm-go/utils"
-)
-
-var (
-	knownCMD    = []string{"INTERACT_WORD", "HOT_RANK_SETTLEMENT", "DANMU_GIFT_LOTTERY_START", "WELCOME_GUARD", "PK_PROCESS", "PK_BATTLE_PRO_TYPE", "MATCH_TEAM_GIFT_RANK", "PK_BATTLE_CRIT", "LUCK_GIFT_AWARD_USER", "SCORE_CARD", "ONLINE_RANK_V2", "PK_BATTLE_SPECIAL_GIFT", "SEND_TOP", "SUPER_CHAT_MESSAGE_JPN", "ANIMATION", "GUARD_LOTTERY_START", "WEEK_STAR_CLOCK", "WELCOME", "WIN_ACTIVITY", "ROOM_KICKOUT", "CHANGE_ROOM_INFO", "ROOM_SKIN_MSG", "ROOM_BLOCK_MSG", "SUPER_CHAT_ENTRANCE", "PK_BATTLE_RANK_CHANGE", "ROOM_LOCK", "TV_END", "PK_PRE", "ROOM_SILENT_OFF", "SEND_GIFT", "DANMU_MSG", "ANCHOR_LOT_START", "ROOM_BOX_USER", "ONLINE_RANK_TOP3", "WIDGET_BANNER", "PK_BATTLE_START", "ACTIVITY_MATCH_GIFT", "PK_AGAIN", "PK_MATCH", "RAFFLE_START", "LIVE", "WISH_BOTTLE", "GUARD_ACHIEVEMENT_ROOM", "ONLINE_RANK_COUNT", "COMMON_NOTICE_DANMAKU", "LOL_ACTIVITY", "HOT_RANK_CHANGED", "ROOM_BLOCK_INTO", "ROOM_LIMIT", "PANEL", "RAFFLE_END", "ENTRY_EFFECT", "STOP_LIVE_ROOM_LIST", "TV_START", "WATCH_LPL_EXPIRED", "PK_BATTLE_PRE", "USER_TOAST_MSG", "BOX_ACTIVITY_START", "PK_MIC_END", "LIVE_INTERACTIVE_GAME", "ROOM_BANNER", "PK_BATTLE_GIFT", "MESSAGEBOX_USER_GAIN_MEDAL", "LITTLE_TIPS", "HOUR_RANK_AWARDS", "NOTICE_MSG", "ROOM_REAL_TIME_MESSAGE_UPDATE", "ANCHOR_LOT_END", "PREPARING", "GUARD_BUY", "ROOM_CHANGE", "room_admin_entrance", "CHASE_FRAME_SWITCH", "DANMU_GIFT_LOTTERY_AWARD", "PK_BATTLE_VOTES_ADD", "PK_BATTLE_END", "CUT_OFF", "PK_BATTLE_PROCESS", "PK_BATTLE_SETTLE_USER", "ANCHOR_LOT_AWARD", "WIN_ACTIVITY_USER", "VOICE_JOIN_STATUS", "DANMU_GIFT_LOTTERY_END", "ROOM_RANK", "SUPER_CHAT_MESSAGE", "ACTIVITY_BANNER_UPDATE_V2", "SPECIAL_GIFT", "ROOM_SILENT_ON", "WARNING", "ROOM_ADMINS", "COMBO_SEND", "HOT_RANK_SETTLEMENT_V2", "ANCHOR_LOT_CHECKSTATUS", "HOT_RANK_CHANGED_V2", "SUPER_CHAT_MESSAGE_DELETE", "PK_END", "PK_SETTLE", "ROOM_REFRESH", "PK_START", "COMBO_END", "PK_LOTTERY_START", "GUARD_WINDOWS_OPEN", "REENTER_LIVE_ROOM", "MESSAGEBOX_USER_MEDAL_CHANGE", "MESSAGEBOX_USER_MEDAL_COMPENSATION", "LITTLE_MESSAGE_BOX", "PK_BATTLE_PRE_NEW", "PK_BATTLE_START_NEW", "PK_BATTLE_PROCESS_NEW", "PK_BATTLE_FINAL_PROCESS", "PK_BATTLE_SETTLE_V2", "PK_BATTLE_SETTLE_NEW", "PK_BATTLE_PUNISH_END", "PK_BATTLE_VIDEO_PUNISH_BEGIN", "PK_BATTLE_VIDEO_PUNISH_END", "ENTRY_EFFECT_MUST_RECEIVE", "SUPER_CHAT_AUDIT", "VIDEO_CONNECTION_JOIN_START", "VIDEO_CONNECTION_JOIN_END", "VIDEO_CONNECTION_MSG", "VTR_GIFT_LOTTERY", "RED_POCKET_START", "FULL_SCREEN_SPECIAL_EFFECT", "POPULARITY_RED_POCKET_START", "POPULARITY_RED_POCKET_WINNER_LIST", "USER_PANEL_RED_ALARM", "SHOPPING_CART_SHOW", "THERMAL_STORM_DANMU_BEGIN", "THERMAL_STORM_DANMU_UPDATE", "THERMAL_STORM_DANMU_CANCEL", "THERMAL_STORM_DANMU_OVER", "MILESTONE_UPDATE_EVENT", "WEB_REPORT_CONTROL", "DANMU_TAG_CHANGE", "RANK_REM", "LIVE_PLAYER_LOG_RECYCLE", "LIVE_INTERNAL_ROOM_LOGIN", "LIVE_OPEN_PLATFORM_GAME", "WATCHED_CHANGE", "DANMU_AGGREGATION", "POPULARITY_RED_POCKET_NEW", "LIKE_INFO_V3_CLICK", "POPULAR_RANK_CHANGED", "DM_INTERACTION", "LIKE_INFO_V3_UPDATE", "HOT_ROOM_NOTIFY", "PLAY_TAG", "OTHER_SLICE_LOADING_RESULT"}
-	knownCMDMap map[string]int
-	cmdReg      = regexp.MustCompile(`"cmd":"([^"]+)"`)
 )
 
 type eventHandlers struct {
-	danmakuMessageHandlers []func(*message.Danmaku)
-	superChatHandlers      []func(*message.SuperChat)
-	giftHandlers           []func(*message.Gift)
-	guardBuyHandlers       []func(*message.GuardBuy)
-	liveStartHandlers      []func(start *message.LiveStart)
-	liveStopHandlers       []func(start *message.LiveStop)
-	userToastHandlers      []func(*message.UserToast)
+	danmaku         []func(*message.Danmaku)
+	superChat       []func(*message.SuperChat)
+	gift            []func(*message.Gift)
+	guardBuy        []func(*message.GuardBuy)
+	liveStart       []func(*message.LiveStart)
+	liveStop        []func(*message.LiveStop)
+	userToast       []func(*message.UserToast)
+	interactWord    []func(*message.InteractWord)
+	onlineRankCount []func(*message.OnlineRankCount)
+	onlineRankV2    []func(*message.OnlineRankV2)
+	onlineRankV3    []func(*message.OnlineRankV3)
+	raw             []func(string, []byte)
 }
+type customEventHandlers map[string]func(string)
 
-type customEventHandlers map[string]func(s string)
-
-func init() {
-	knownCMDMap = make(map[string]int)
-	for _, c := range knownCMD {
-		knownCMDMap[c] = 0
-	}
-}
-
-// RegisterCustomEventHandler 注册 自定义事件 的处理器
-//
-// 需要提供事件名，可参考 knownCMD
-func (c *Client) RegisterCustomEventHandler(cmd string, handler func(s string)) {
-	(*c.customEventHandlers)[cmd] = handler
-}
-
-// RegisterFullEventHandlers 注册 所有事件 的处理器
-func (c *Client) RegisterFullEventHandler(handler func(s string)) {
+// RegisterFullEventHandler 设置全事件处理器，兼容 fork 的旧接口。
+// 它不覆盖自定义或内置处理器；再次注册会替换原处理器，nil 清除。
+func (c *Client) RegisterFullEventHandler(handler func(string)) {
+	c.handlerMu.Lock()
 	c.fullEventHandler = handler
+	c.handlerMu.Unlock()
 }
 
-// OnDanmaku 添加 弹幕事件 的处理器
+// RegisterCustomEventHandler 注册优先于内置解析的处理器。nil 删除该覆盖。
+// 带参数的命令统一使用冒号之前的命令名。
+func (c *Client) RegisterCustomEventHandler(cmd string, handler func(string)) {
+	cmd, _, _ = strings.Cut(cmd, ":")
+	c.handlerMu.Lock()
+	defer c.handlerMu.Unlock()
+	if c.customEventHandlers == nil {
+		c.customEventHandlers = make(customEventHandlers)
+	}
+	if handler == nil {
+		delete(c.customEventHandlers, cmd)
+	} else {
+		c.customEventHandlers[cmd] = handler
+	}
+}
+
+// OnDanmaku 添加处理器。回调按注册顺序执行，应及时返回。
 func (c *Client) OnDanmaku(f func(*message.Danmaku)) {
-	c.eventHandlers.danmakuMessageHandlers = append(c.eventHandlers.danmakuMessageHandlers, f)
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.danmaku = append(c.eventHandlers.danmaku, f)
+	c.handlerMu.Unlock()
 }
 
-// OnSuperChat 添加 醒目留言事件 的处理器
+// OnSuperChat 添加处理器。回调按注册顺序执行，应及时返回。
 func (c *Client) OnSuperChat(f func(*message.SuperChat)) {
-	c.eventHandlers.superChatHandlers = append(c.eventHandlers.superChatHandlers, f)
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.superChat = append(c.eventHandlers.superChat, f)
+	c.handlerMu.Unlock()
 }
 
-// OnGift 添加 礼物事件 的处理器
-func (c *Client) OnGift(f func(gift *message.Gift)) {
-	c.eventHandlers.giftHandlers = append(c.eventHandlers.giftHandlers, f)
+// OnGift 添加处理器。回调按注册顺序执行，应及时返回。
+func (c *Client) OnGift(f func(*message.Gift)) {
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.gift = append(c.eventHandlers.gift, f)
+	c.handlerMu.Unlock()
 }
 
-// OnGuardBuy 添加 开通大航海事件 的处理器
+// OnGuardBuy 添加处理器。回调按注册顺序执行，应及时返回。
 func (c *Client) OnGuardBuy(f func(*message.GuardBuy)) {
-	c.eventHandlers.guardBuyHandlers = append(c.eventHandlers.guardBuyHandlers, f)
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.guardBuy = append(c.eventHandlers.guardBuy, f)
+	c.handlerMu.Unlock()
 }
 
-// OnLiveStart 添加 开播事件 的处理器
-func (c *Client) OnLiveStart(f func(start *message.LiveStart)) {
-	c.eventHandlers.liveStartHandlers = append(c.eventHandlers.liveStartHandlers, f)
+// OnLiveStart 添加处理器。回调按注册顺序执行，应及时返回。
+func (c *Client) OnLiveStart(f func(*message.LiveStart)) {
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.liveStart = append(c.eventHandlers.liveStart, f)
+	c.handlerMu.Unlock()
 }
 
-// OnLiveStop 添加 关播事件 的处理器
-func (c *Client) OnLiveStop(f func(start *message.LiveStop)) {
-	c.eventHandlers.liveStopHandlers = append(c.eventHandlers.liveStopHandlers, f)
+// OnLiveStop 添加处理器。回调按注册顺序执行，应及时返回。
+func (c *Client) OnLiveStop(f func(*message.LiveStop)) {
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.liveStop = append(c.eventHandlers.liveStop, f)
+	c.handlerMu.Unlock()
 }
 
-// OnUserToast 添加 UserToast 的处理
-// OnUserToast 添加 UserToast 的处理器
+// OnUserToast 添加处理器。回调按注册顺序执行，应及时返回。
 func (c *Client) OnUserToast(f func(*message.UserToast)) {
-	c.eventHandlers.userToastHandlers = append(c.eventHandlers.userToastHandlers, f)
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.userToast = append(c.eventHandlers.userToast, f)
+	c.handlerMu.Unlock()
 }
 
-// Handle 处理一个包
+// OnInteractWord 添加处理器。回调按注册顺序执行，应及时返回。
+func (c *Client) OnInteractWord(f func(*message.InteractWord)) {
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.interactWord = append(c.eventHandlers.interactWord, f)
+	c.handlerMu.Unlock()
+}
+
+// OnOnlineRankCount 添加处理器。回调按注册顺序执行，应及时返回。
+func (c *Client) OnOnlineRankCount(f func(*message.OnlineRankCount)) {
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.onlineRankCount = append(c.eventHandlers.onlineRankCount, f)
+	c.handlerMu.Unlock()
+}
+
+// OnOnlineRankV2 添加处理器。回调按注册顺序执行，应及时返回。
+func (c *Client) OnOnlineRankV2(f func(*message.OnlineRankV2)) {
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.onlineRankV2 = append(c.eventHandlers.onlineRankV2, f)
+	c.handlerMu.Unlock()
+}
+
+// OnOnlineRankV3 添加处理器。回调按注册顺序执行，应及时返回。
+func (c *Client) OnOnlineRankV3(f func(*message.OnlineRankV3)) {
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.onlineRankV3 = append(c.eventHandlers.onlineRankV3, f)
+	c.handlerMu.Unlock()
+}
+
+// OnRawEvent 观察全部通知（包括未知命令），在自定义和内置处理器之前执行。
+// cmd 保留冒号参数，data 为只读原始 JSON；此回调不覆盖内置处理器。
+func (c *Client) OnRawEvent(f func(cmd string, data []byte)) {
+	if f == nil {
+		return
+	}
+	c.handlerMu.Lock()
+	c.eventHandlers.raw = append(c.eventHandlers.raw, f)
+	c.handlerMu.Unlock()
+}
+
+// Handle 同步分发一个包，兼容旧入口；回调 panic 被隔离。
+// 网络接收使用独立、有界的分发队列，保持服务器消息顺序。
 func (c *Client) Handle(p packet.Packet) {
-	switch p.Operation {
-	case packet.Notification:
-		cmd := parseCmd(p.Body)
-		sb := utils.BytesToString(p.Body)
-		// 新的弹幕 cmd 可能带参数
-		if ind := strings.Index(cmd, ":"); ind >= 0 {
-			cmd = cmd[:ind]
-		}
-
-		// 执行 fullEventHandler，不覆盖库其他 handler
-		if fullEventHandler := c.fullEventHandler; fullEventHandler != nil {
-			go cover(func() { fullEventHandler(sb) })
-		}
-
-		// 优先执行自定义 eventHandler ，会覆盖库内自带的 handler
-		f, ok := (*c.customEventHandlers)[cmd]
-		if ok {
-			go cover(func() { f(sb) })
-			return
-		}
-		switch cmd {
-		// 弹幕
-		case "DANMU_MSG":
-			d := new(message.Danmaku)
-			d.Parse(p.Body)
-			for _, fn := range c.eventHandlers.danmakuMessageHandlers {
-				go cover(func() { fn(d) })
-			}
-			// 醒目留言
-		case "SUPER_CHAT_MESSAGE":
-			s := new(message.SuperChat)
-			s.Parse(p.Body)
-			for _, fn := range c.eventHandlers.superChatHandlers {
-				go cover(func() { fn(s) })
-			}
-			// 礼物
-		case "SEND_GIFT":
-			g := new(message.Gift)
-			g.Parse(p.Body)
-			for _, fn := range c.eventHandlers.giftHandlers {
-				go cover(func() { fn(g) })
-			}
-			// 大航海
-		case "GUARD_BUY":
-			g := new(message.GuardBuy)
-			g.Parse(p.Body)
-			for _, fn := range c.eventHandlers.guardBuyHandlers {
-				go cover(func() { fn(g) })
-			}
-			// 开播
-		case "LIVE":
-			l := new(message.LiveStart)
-			l.Parse(p.Body)
-			for _, fn := range c.eventHandlers.liveStartHandlers {
-				go cover(func() { fn(l) })
-			}
-			//下播
-		case "PREPARING":
-			l := new(message.LiveStop)
-			l.Parse(p.Body)
-			for _, fn := range c.eventHandlers.liveStopHandlers {
-				go cover(func() { fn(l) })
-			}
-		// 用户 toast
-		case "USER_TOAST_MSG":
-			u := new(message.UserToast)
-			u.Parse(p.Body)
-			for _, fn := range c.eventHandlers.userToastHandlers {
-				go cover(func() { fn(u) })
-			}
-		default:
-			if _, ok := knownCMDMap[cmd]; ok {
-				return
-			}
-			log.Debugf("unknown cmd(%s), body: %s", cmd, p.Body)
-		}
-	case packet.HeartBeatResponse:
-	case packet.RoomEnterResponse:
-	default:
-		log.WithField("protover", p.ProtocolVersion).
-			WithField("data", string(p.Body)).
-			Warn("unknown protover")
+	if err := c.HandlePacket(p); err != nil {
+		log.WithError(err).Debug("invalid notification")
 	}
 }
 
-// parseCmd 获取 JSON 报文的 CMD
-func parseCmd(d []byte) string {
-	// {"cmd":"DANMU_MSG", ...
-	str := utils.BytesToString(d)
-	match := cmdReg.FindStringSubmatch(str)
-	if len(match) > 1 {
-		return match[1]
+// HandlePacket 与 Handle 相同，但将解析错误返回调用方。
+func (c *Client) HandlePacket(p packet.Packet) error {
+	if p.Operation != packet.Notification {
+		return nil
 	}
-	return ""
+	cmd := parseCmd(p.Body)
+	if cmd == "" {
+		return fmt.Errorf("notification has no valid string cmd")
+	}
+	return c.handleNotification(p.Body, cmd)
 }
 
+// 网络路径已解析命令，复用结果以避免再次扫描整条通知。
+func (c *Client) handleNotification(body []byte, cmd string) error {
+	base, _, _ := strings.Cut(cmd, ":")
+	c.handlerMu.RLock()
+	handlers := c.eventHandlers
+	custom := c.customEventHandlers[base]
+	full := c.fullEventHandler
+	c.handlerMu.RUnlock()
+	if full != nil {
+		cover(func() { full(string(body)) })
+	}
+	for _, fn := range handlers.raw {
+		cover(func() { fn(cmd, body) })
+	}
+	if custom != nil {
+		cover(func() { custom(string(body)) })
+		return nil
+	}
+	switch base {
+	case "DANMU_MSG":
+		return dispatch(body, handlers.danmaku, (*message.Danmaku).ParseJSON)
+	case "SUPER_CHAT_MESSAGE":
+		return dispatch(body, handlers.superChat, (*message.SuperChat).ParseJSON)
+	case "SEND_GIFT":
+		return dispatch(body, handlers.gift, (*message.Gift).ParseJSON)
+	case "GUARD_BUY":
+		return dispatch(body, handlers.guardBuy, (*message.GuardBuy).ParseJSON)
+	case "LIVE":
+		return dispatch(body, handlers.liveStart, (*message.LiveStart).ParseJSON)
+	case "PREPARING":
+		return dispatch(body, handlers.liveStop, (*message.LiveStop).ParseJSON)
+	case "USER_TOAST_MSG", "USER_TOAST_MSG_V2":
+		return dispatch(body, handlers.userToast, (*message.UserToast).ParseJSON)
+	case "INTERACT_WORD", "INTERACT_WORD_V2":
+		return dispatch(body, handlers.interactWord, (*message.InteractWord).ParseJSON)
+	case "ONLINE_RANK_COUNT":
+		return dispatch(body, handlers.onlineRankCount, (*message.OnlineRankCount).ParseJSON)
+	case "ONLINE_RANK_V2":
+		return dispatch(body, handlers.onlineRankV2, (*message.OnlineRankV2).ParseJSON)
+	case "ONLINE_RANK_V3":
+		return dispatch(body, handlers.onlineRankV3, (*message.OnlineRankV3).ParseJSON)
+	case "SEND_GIFT_V2":
+		if len(handlers.gift) == 0 {
+			return nil
+		}
+		gifts, err := message.ParseGiftsV2(body)
+		if err != nil {
+			return err
+		}
+		for i := range gifts {
+			for _, fn := range handlers.gift {
+				cover(func() { fn(&gifts[i]) })
+			}
+		}
+	}
+	return nil
+}
+func dispatch[T any](data []byte, handlers []func(*T), parse func(*T, []byte) error) error {
+	if len(handlers) == 0 {
+		return nil
+	}
+	value := new(T)
+	if err := parse(value, data); err != nil {
+		return err
+	}
+	for _, fn := range handlers {
+		cover(func() { fn(value) })
+	}
+	return nil
+}
+func parseCmd(data []byte) string {
+	if !gjson.ValidBytes(data) {
+		return ""
+	}
+	cmd := gjson.GetBytes(data, "cmd")
+	if cmd.Type != gjson.String {
+		return ""
+	}
+	return cmd.String()
+}
 func cover(f func()) {
 	defer func() {
 		if pan := recover(); pan != nil {

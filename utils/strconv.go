@@ -1,30 +1,16 @@
 package utils
 
-import (
-	"encoding/base64"
-	"unsafe"
-)
+import "encoding/base64"
 
+// StringToBytes 返回独立的可写副本，避免修改字符串底层内存。
 func StringToBytes(s string) []byte {
-	if len(s) == 0 {
+	if s == "" {
 		return nil
 	}
-	return unsafe.Slice(unsafe.StringData(s), len(s))
+	return []byte(s)
 }
 
-func BytesToString(b []byte) string {
-	if len(b) == 0 {
-		return ""
-	}
-	return unsafe.String(unsafe.SliceData(b), len(b))
-}
+// BytesToString 返回不受后续切片修改影响的字符串。
+func BytesToString(b []byte) string { return string(b) }
 
-func B64Decode(s string) ([]byte, error) {
-	dst := make([]byte, base64.StdEncoding.DecodedLen(len(s)))
-	n, err := base64.StdEncoding.Decode(dst, []byte(s))
-	if err != nil {
-		return dst, err
-	}
-	dst = dst[:n]
-	return dst, nil
-}
+func B64Decode(s string) ([]byte, error) { return base64.StdEncoding.DecodeString(s) }

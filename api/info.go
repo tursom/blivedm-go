@@ -1,12 +1,11 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"strconv"
-
-	"github.com/tidwall/gjson"
 )
 
 // RoomInfo
@@ -58,51 +57,102 @@ type DanmuInfo struct {
 }
 
 func GetUid(cookie string) (int, error) {
-	headers := &http.Header{}
-	headers.Set("cookie", cookie)
-	headers.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0")
-	resp, err := HttpGet("https://api.bilibili.com/x/web-interface/nav", headers)
-	if err != nil {
+	return GetUidContext(context.Background(), cookie)
+}
+
+func GetUidContext(ctx context.Context, cookie string) (int, error) {
+	var result struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
+			IsLogin bool `json:"isLogin"`
+			Mid     int  `json:"mid"`
+		} `json:"data"`
+	}
+	if err := GetJsonWithHeaderContext(ctx, "https://api.bilibili.com/x/web-interface/nav", liveHeaders(cookie), &result); err != nil {
 		return 0, err
 	}
-	j := gjson.ParseBytes(resp)
-	if j.Get("code").Int() != 0 || !j.Get("data.isLogin").Bool() {
-		return 0, errors.New(j.Get("message").String())
+	if err := apiError(result.Code, result.Message, ""); err != nil {
+		return 0, err
 	}
-	return int(j.Get("data.mid").Int()), nil
+	if !result.Data.IsLogin || result.Data.Mid <= 0 {
+		return 0, errors.New("bilibili: not logged in")
+	}
+	return result.Data.Mid, nil
 }
 
 func GetDanmuInfo(roomID int, cookie string) (*DanmuInfo, error) {
-	result := &DanmuInfo{}
-	headers := &http.Header{}
-	headers.Set("cookie", cookie)
-	headers.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0")
+	return GetDanmuInfoContext(context.Background(), roomID, cookie)
+}
 
-	signedUrl, err := WbiKeysSignString(fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=%d&type=0", roomID))
+func GetDanmuInfoContext(ctx context.Context, roomID int, cookie string) (*DanmuInfo, error) {
+	if roomID <= 0 {
+		return nil, fmt.Errorf("invalid room ID: %d", roomID)
+	}
+	signedURL, err := WbiKeysSignStringContext(ctx, fmt.Sprintf("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo?id=%d&type=0", roomID))
 	if err != nil {
 		return nil, err
 	}
-
-	err = GetJsonWithHeader(signedUrl, headers, result)
-	if err != nil {
+	// 风控响应的 data 可能是 []，需先检查 code 再解析成功数据。
+	var envelope struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Ttl     int             `json:"ttl"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if err := GetJsonWithHeaderContext(ctx, signedURL, liveHeaders(cookie), &envelope); err != nil {
 		return nil, err
+	}
+	result := &DanmuInfo{Code: envelope.Code, Message: envelope.Message, Ttl: envelope.Ttl}
+	if result.Code == 0 {
+		if err := json.Unmarshal(envelope.Data, &result.Data); err != nil {
+			return nil, err
+		}
+	}
+	// 与 Rust 客户端一致，风控和空主机列表使用公共弹幕服务器。
+	if result.Code == -352 || result.Code == 352 {
+		result.Code = 0
+		result.Data.Token = ""
+		result.Data.HostList = nil
+	}
+	if err := apiError(result.Code, result.Message, ""); err != nil {
+		return nil, err
+	}
+	if len(result.Data.HostList) == 0 {
+		result.Data.HostList = append(result.Data.HostList, struct {
+			Host    string `json:"host"`
+			Port    int    `json:"port"`
+			WssPort int    `json:"wss_port"`
+			WsPort  int    `json:"ws_port"`
+		}{Host: "broadcastlv.chat.bilibili.com", Port: 2243, WssPort: 443, WsPort: 2244})
 	}
 	return result, nil
 }
 
 func GetRoomInfo(roomID int) (*RoomInfo, error) {
+	return GetRoomInfoContext(context.Background(), roomID)
+}
+
+func GetRoomInfoContext(ctx context.Context, roomID int) (*RoomInfo, error) {
+	if roomID <= 0 {
+		return nil, fmt.Errorf("invalid room ID: %d", roomID)
+	}
 	result := &RoomInfo{}
-	headers := &http.Header{}
-	headers.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:137.0) Gecko/20100101 Firefox/137.0")
-	err := GetJsonWithHeader(fmt.Sprintf("https://api.live.bilibili.com/room/v1/Room/room_init?id=%d", roomID), headers, result)
-	if err != nil {
+	if err := GetJsonWithHeaderContext(ctx, fmt.Sprintf("https://api.live.bilibili.com/room/v1/Room/room_init?id=%d", roomID), liveHeaders(""), result); err != nil {
+		return nil, err
+	}
+	if err := apiError(result.Code, result.Message, result.Msg); err != nil {
 		return nil, err
 	}
 	return result, nil
 }
 
 func GetRoomRealID(roomID int) (string, error) {
-	res, err := GetRoomInfo(roomID)
+	return GetRoomRealIDContext(context.Background(), roomID)
+}
+
+func GetRoomRealIDContext(ctx context.Context, roomID int) (string, error) {
+	res, err := GetRoomInfoContext(ctx, roomID)
 	if err != nil {
 		return "", err
 	}

@@ -1,7 +1,8 @@
 package api
 
 import (
-	"encoding/json"
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -38,7 +39,13 @@ type BiliVerify struct {
 
 // SendDanmaku https://api.live.bilibili.com/msg/send
 func SendDanmaku(d *DanmakuRequest, v *BiliVerify) (*SendDanmakuResp, error) {
-	client := &http.Client{}
+	return SendDanmakuContext(context.Background(), d, v)
+}
+
+func SendDanmakuContext(ctx context.Context, d *DanmakuRequest, v *BiliVerify) (*SendDanmakuResp, error) {
+	if d == nil || v == nil {
+		return nil, errors.New("danmaku request and verification must not be nil")
+	}
 	result := &SendDanmakuResp{}
 	form := url.Values{
 		"bubble":     {d.Bubble},
@@ -55,16 +62,14 @@ func SendDanmaku(d *DanmakuRequest, v *BiliVerify) (*SendDanmakuResp, error) {
 	if d.DmType != "" {
 		form.Add("dm_type", d.DmType)
 	}
-	req, err := http.NewRequest("POST", "https://api.live.bilibili.com/msg/send", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.live.bilibili.com/msg/send", strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Cookie", fmt.Sprintf("bili_jct=%s;SESSDATA=%s", v.Csrf, v.SessData))
-	resp, err := client.Do(req)
-	defer resp.Body.Close()
-
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
+	req.Header.Set("User-Agent", userAgent)
+	if err := decodeResponse(req, result); err != nil {
 		return nil, err
 	}
 	return result, nil
